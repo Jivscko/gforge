@@ -83,7 +83,7 @@ function userJson(): Record<string, unknown> {
   };
 }
 
-function repoJson(repo: Repo): Record<string, unknown> {
+export function repoJson(repo: Repo): Record<string, unknown> {
   return {
     id: repo.id,
     node_id: `R_gforge${repo.id}`,
@@ -119,7 +119,7 @@ function labelJson(label: Label): Record<string, unknown> {
   return { id: label.id, node_id: `L_gforge${label.id}`, name: label.name, color: label.color, description: label.description, default: false };
 }
 
-function issueJson(repo: Repo, issue: Issue): Record<string, unknown> {
+export function issueJson(repo: Repo, issue: Issue): Record<string, unknown> {
   return {
     url: `/api/v3/repos/${repo.owner}/${repo.name}/issues/${issue.number}`,
     repository_url: `/api/v3/repos/${repo.owner}/${repo.name}`,
@@ -154,7 +154,7 @@ function pullRefJson(repo: Repo, ref: { ref: string; sha: string }): Record<stri
   };
 }
 
-function pullJson(store: Store, repo: Repo, pull: Pull): Record<string, unknown> {
+export function pullJson(store: Store, repo: Repo, pull: Pull): Record<string, unknown> {
   const mergeable = pull.state === 'open' ? store.mergeableState(repo, pull) : 'UNKNOWN';
   return {
     url: `/api/v3/repos/${repo.owner}/${repo.name}/pulls/${pull.number}`,
