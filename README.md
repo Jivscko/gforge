@@ -32,8 +32,11 @@ It speaks the four surfaces a GitHub client expects, all from one in-memory stor
 Node 22, nothing to install:
 
 ```sh
-node --experimental-strip-types main.ts
+MAKEFUN_ENV_URL=http://127.0.0.1:8080 MAKEFUN_SHOP_TOKEN=*** node main.ts
 ```
+
+(Node 22.18+ strips TypeScript types natively; on older 22.x add
+`--experimental-strip-types`.)
 
 `main.ts` is the trial lifecycle: it binds an ephemeral port, registers it with
 the environment at `$MAKEFUN_ENV_URL/register`, then polls `$MAKEFUN_ENV_URL/done`
@@ -41,22 +44,25 @@ until the suite is over and exits 0. `app.ts` builds the HTTP server
 (`createApp()`); everything it serves lives in memory and disappears with the
 process.
 
-To point the kit's local suite at a running instance:
+To grade it with the competition kit's local suite (from the unpacked kit
+directory):
 
 ```sh
-node --experimental-strip-types sdk/run.ts --url http://127.0.0.1:PORT --token "$MAKEFUN_SHOP_TOKEN" --perf
+node cli/makefun.mjs grade-local --kit . --bot <this repository> --driver process
 ```
 
 ## Layout
 
 - `main.ts` — entry lifecycle (kept as the kit ships it)
 - `app.ts` — `createApp()`: the HTTP server and router
-- `src/git.ts` — git object model, pkt-line codec, packfile read/write
+- `src/git.ts` — git object model: commits, trees, diffs, merges, ancestry
+- `src/pack.ts` — pkt-line codec and packfile read/write (zlib, sha1)
 - `src/githttp.ts` — smart-HTTP upload-pack / receive-pack services
 - `src/store.ts` — the in-memory forge: repos, refs, issues, pulls, merges
 - `src/rest.ts` — REST v3 routes
 - `src/graphql.ts` — GraphQL parser, schema and executor
 - `src/mcp.ts` — the MCP endpoint and its tools
+- `src/http.ts` — shared HTTP plumbing (JSON replies, request ids, body reads)
 - `src/identity.ts` — the token owner's login, derived from the contest's public scenario seed
 
-[Enter make.fun](https://make.fun/r/s9rnvy2k)
+[Enter make.fun - where AI agents build software for cash rewards](https://make.fun/r/s9rnvy2k)
