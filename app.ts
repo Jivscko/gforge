@@ -1,49 +1,84 @@
-// The starter's HTTP surface, exactly as it ships: a health probe and an API root, and a JSON 404
-// for everything else. The contest's real surface — git smart HTTP, REST v3 resources, GraphQL v4 and
-// the MCP endpoint — is what you add (README.md names it, and the rules link below says what scores).
-//
-// app.ts is deliberately separate from main.ts: this is the server, the file you grow; main.ts is the
-// entry <-> env lifecycle and should stay as it is.
+// createApp(): the forge's HTTP server. One process, one in-memory store, four surfaces:
+// git smart HTTP at /{owner}/{repo}.git, REST v3 under /api/v3, GraphQL v4 at /api/graphql and
+// MCP at /mcp. main.ts owns the lifecycle (bind, register, poll done); this file owns the wire.
+// Every reply carries a non-empty X-GitHub-Request-Id; every API reply is JSON, never HTML.
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { ApiError, Store } from './src/store.ts';
+import { bearerOf, nextRequestId, sendJson } from './src/http.ts';
+import { handleRest } from './src/rest.ts';
+import { handleGit } from './src/githttp.ts';
+import { handleGraphQL } from './src/graphql.ts';
+import { handleMcp } from './src/mcp.ts';
 
-const JSON_TYPE = 'application/json; charset=utf-8';
+/** The smart-HTTP path shape: /{owner}/{repo}.git/{suffix}. */
+const GIT_PATH = /^\/([^/]+)\/([^/]+)\.git(?:\/(.*))?$/;
 
-/** Answer one request with a JSON body; `headers` go beside the JSON ones. */
-function sendJson(res: ServerResponse, status: number, body: unknown, headers: Readonly<Record<string, string>> = {}): void {
-  const text = `${JSON.stringify(body)}\n`;
-  res.writeHead(status, { 'content-type': JSON_TYPE, 'content-length': Buffer.byteLength(text), ...headers });
-  res.end(text);
+interface SurfaceContext {
+  readonly req: IncomingMessage;
+  readonly res: ServerResponse;
+  readonly url: URL;
+  readonly store: Store;
+  readonly authed: boolean;
 }
 
-/** The path of a request URL, or '/' when it does not parse (never a throw from a request). */
-function pathOf(req: IncomingMessage): string {
-  try {
-    return new URL(req.url ?? '/', 'http://entry').pathname;
-  } catch {
-    return '/';
+/** Render a thrown error as the JSON body its status calls for; the server always stays up. */
+function renderError(res: ServerResponse, err: unknown): void {
+  const status = typeof (err as { status?: unknown })?.status === 'number' ? (err as { status: number }).status : 500;
+  const message = err instanceof Error && status !== 500 ? err.message : status === 500 ? 'Internal server error' : String(err);
+  if (status === 500) process.stderr.write(`[gforge] ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
+  if (!res.headersSent) sendJson(res, status, { message });
+  else res.end();
+}
+
+async function dispatch(req: IncomingMessage, res: ServerResponse, store: Store, shopToken: string): Promise<void> {
+  res.setHeader('x-github-request-id', nextRequestId());
+  const url = new URL(req.url ?? '/', 'http://entry');
+  const path = url.pathname;
+  const method = req.method ?? 'GET';
+
+  // The env's boot probe: no auth, twice.
+  if (method === 'GET' && path === '/healthz') {
+    sendJson(res, 200, { ok: true });
+    return;
   }
+
+  const bearer = bearerOf(req);
+  const authed = bearer !== null && (shopToken === '' || bearer === shopToken);
+  const ctx: SurfaceContext = { req, res, url, store, authed };
+
+  if (path === '/api/v3' || path.startsWith('/api/v3/')) {
+    await handleRest(ctx);
+    return;
+  }
+  if (path === '/api/graphql') {
+    await handleGraphQL(ctx);
+    return;
+  }
+  if (path === '/mcp') {
+    await handleMcp(ctx);
+    return;
+  }
+  const gitMatch = GIT_PATH.exec(path);
+  if (gitMatch !== null) {
+    await handleGit({ ...ctx, owner: decodeURIComponent(gitMatch[1]!), repo: decodeURIComponent(gitMatch[2]!), suffix: gitMatch[3] ?? '' });
+    return;
+  }
+  sendJson(res, 404, { message: 'Not Found' });
 }
 
 /** Build the server. It binds nothing until the caller listens; the entry listens on an ephemeral port. */
 export function createApp(): Server {
-  return createServer((req: IncomingMessage, res: ServerResponse) => {
-    const path = pathOf(req);
-    const method = req.method ?? 'GET';
-
-    // The env's boot check calls this twice: 200 {"ok":true}.
-    if (method === 'GET' && path === '/healthz') {
-      sendJson(res, 200, { ok: true });
-      return;
-    }
-
-    // The GitHub API root: a 200 with the token's scopes, as api.github.com answers GET /.
-    if (method === 'GET' && (path === '/api/v3' || path === '/api/v3/')) {
-      sendJson(res, 200, { current_user_url: '/api/v3/user', rate_limit_url: '/api/v3/rate_limit' }, { 'x-oauth-scopes': 'repo, read:org' });
-      return;
-    }
-
-    // Everything else, every method: GitHub's 404 body.
-    sendJson(res, 404, { message: 'Not Found' });
+  const store = new Store();
+  const shopToken = process.env.MAKEFUN_SHOP_TOKEN ?? '';
+  const server = createServer((req, res) => {
+    void dispatch(req, res, store, shopToken).catch((err: unknown) => renderError(res, err));
   });
+  // Keep-alive is the read benchmark's transport; give idle sockets a generous window.
+  server.keepAliveTimeout = 65_000;
+  server.headersTimeout = 70_000;
+  server.on('clientError', (_err, socket) => {
+    if (!socket.destroyed) socket.end('HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\n\r\n');
+  });
+  return server;
 }
